@@ -1,8 +1,8 @@
-# PillScope Pro 🔬
+# PillScope Pro 
 
 Un osciloscopio digital de alto rendimiento basado en el microcontrolador **STM32F103 (Blue Pill)** y una interfaz gráfica profesional en Python. Desarrollado como proyecto de ingeniería para visualización, análisis y medición de señales eléctricas en tiempo real.
 
-## 🚀 Características Principales
+## Características Principales
 
 *   **Hardware Robusto:** Basado en la arquitectura ARM Cortex-M3 (STM32F103C8T6 a 72MHz).
 *   **Interfaz Hantek-Style:** GUI desarrollada en Python (`pyqtgraph` y `PyQt5`) con estética profesional, modo oscuro y alta fluidez.
@@ -14,13 +14,13 @@ Un osciloscopio digital de alto rendimiento basado en el microcontrolador **STM3
 *   **Analizador de Espectro:** Implementación de Fast Fourier Transform (FFT) para visualizar frecuencias armónicas en tiempo real.
 *   **Deep Memory (Memoria Cosida):** Historial ajustable de 1x hasta 32x (4096 puntos en pantalla).
 
-## 🛠️ Stack Tecnológico
+## Stack Tecnológico
 
 *   **Firmware:** C (STM32CubeIDE, HAL Drivers, USB Device Library).
 *   **Software PC:** Python 3 (PySerial, NumPy, PyQtGraph, PyQt5).
 *   **Frontend Analógico (AFE):** Op-Amp LM358 configurado para sumar un offset DC de 1.65V, permitiendo al ADC leer señales de Corriente Alterna (AC) como audio y senoidales puras.
 
-## ⚙️ Uso y Controles
+## Uso y Controles
 
 1. Conectar la Blue Pill al puerto USB de la PC.
 2. Ejecutar `pillscope_app.py`.
