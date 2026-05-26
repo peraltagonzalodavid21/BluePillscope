@@ -259,6 +259,21 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  if (*Len >= 2 && Buf[0] == 'S') {
+      uint8_t speed_idx = Buf[1] - '0';
+      Update_Sampling_Rate(speed_idx);
+  }
+  
+  if (*Len >= 2 && Buf[0] == 'L') {
+      // El valor viene como string después de la L (ej: L1500)
+      char val_str[8];
+      uint32_t to_copy = (*Len - 1 < 7) ? *Len - 1 : 7;
+      memcpy(val_str, &Buf[1], to_copy);
+      val_str[to_copy] = '\0';
+      uint16_t level = (uint16_t)atoi(val_str);
+      Update_Trigger_Level(level);
+  }
+
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);

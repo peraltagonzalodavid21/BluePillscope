@@ -53,6 +53,8 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
+void Update_Sampling_Rate(uint8_t speed_idx);
+void Update_Trigger_Level(uint16_t level);
 
 /* USER CODE BEGIN EFP */
 

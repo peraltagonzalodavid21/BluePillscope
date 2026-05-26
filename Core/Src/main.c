@@ -27,8 +27,8 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#define ADC_BUF_SIZE 512
-#define CHUNK_SIZE 128
+#define ADC_BUF_SIZE 2048   // Aumentado para 1.71 MSPS Uniformes (8KB RAM)
+#define CHUNK_SIZE 1024     // Trama contigua de 597 µs
 #define TRIGGER_LEVEL 2048 // ~1.65V
 
 // Firmware States
@@ -55,11 +55,12 @@ TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN PV */
-uint16_t adc_buffer[ADC_BUF_SIZE];
-char tx_buffer[CHUNK_SIZE * 8]; // Example: "3.30\n" up to roughly 8 chars per sample
+uint32_t adc_buffer[ADC_BUF_SIZE]; // Buffer de 32 bits para Modo Dual
+char tx_buffer[CHUNK_SIZE * 2 + 16]; // 2064 bytes para transporte binario seguro
 
 uint32_t last_idx = 0;
 uint16_t last_val = 0;
+uint16_t trigger_level = 2048; // Umbral dinámico (inicial 1.65V)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -80,6 +81,14 @@ static void MX_TIM4_Init(void);
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+
+/* Helper para verificar si el puerto USB está listo (Evita cuelgues) */
+extern USBD_HandleTypeDef hUsbDeviceFS;
+bool is_usb_ready(void) {
+    USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
+    if (hcdc == NULL) return false;
+    return (hcdc->TxState == 0); // 0 significa IDLE
+}
 
 /* Potenciómetro eliminado: Timebase fijo en 100͘s/muestra (PSC=71, ARR=99) */
 /* USER CODE END 0 */
@@ -122,6 +131,13 @@ int main(void)
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   
+  // Calibración y arranque de ADCs en Modo Dual
+  HAL_ADCEx_Calibration_Start(&hadc1);
+  HAL_ADCEx_Calibration_Start(&hadc2);
+  
+  // ¡CRÍTICO! El ADC2 (Slave) debe encenderse explícitamente en el HAL de F1
+  HAL_ADC_Start(&hadc2);
+  
   // Botones de Comando Profesionales
   bool trigger_falling = false;
   bool normal_mode     = false;
@@ -134,14 +150,14 @@ int main(void)
   uint32_t last_btn_time = 0;
   uint16_t btn_last_state = 0xFFFF;
   
-  // 1. Iniciar Onda Cuadrada Fija Test a 1kHz en PB6 (Para auto-calibrarte)
+  // 1. Iniciar Onda Cuadrada Fija Test a 1kHz en PB6
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1); 
   
-  // 2. Iniciar Timer Rítmico de captura (Timebase)
+  // 2. Iniciar Timer Rítmico de captura
   HAL_TIM_Base_Start(&htim3);               
   
-  // 3. Iniciar ADC1 en modo DMA Circular Ininterrumpido
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, ADC_BUF_SIZE);
+  // 3. Iniciar ADCs en modo DMA Dual Intercalado
+  HAL_ADCEx_MultiModeStart_DMA(&hadc1, (uint32_t*)adc_buffer, ADC_BUF_SIZE);
   
   last_idx = ADC_BUF_SIZE - __HAL_DMA_GET_COUNTER(&hdma_adc1);
   /* USER CODE END 2 */
@@ -150,67 +166,69 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    // Lectura de Estado Mantenido (Interruptores Duros sin rebote)
+    // Lectura de Estado Mantenido
     probe_x10_mode = (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET);
 
     // ==========================================
     // LECTURA DE BOTONES (ANTI-REBOTE SOFTWARE)
     // ==========================================
     uint32_t current_time = HAL_GetTick();
-    if (current_time - last_btn_time > 50) { // 50ms para limpiar el ruido metálico
+    if (current_time - last_btn_time > 50) {
         uint16_t state = GPIOB->IDR;
-        
-        // PB9 dejó de ser Push-Button para ser Interruptor de 2 posiciones físicas.
-        
-        // PB10: Selector Flanco de Disparo (Toggle)
         if ((state & GPIO_PIN_10) == 0 && (btn_last_state & GPIO_PIN_10) != 0) trigger_falling = !trigger_falling;
-        // PB11: Auto / Normal Trigger (Toggle)
         if ((state & GPIO_PIN_11) == 0 && (btn_last_state & GPIO_PIN_11) != 0) normal_mode = !normal_mode;
-        // PB12: Filtro Anti-Ruido Averaging (Toggle)
-        if ((state & GPIO_PIN_12) == 0 && (btn_last_state & GPIO_PIN_12) != 0) filter_averaging = !filter_averaging;
-        // PB14: Play / Pause (Toggle)
+        
+        // BOTÓN PB12: AUTO-SET (Ajuste automático de Trigger)
+        if ((state & GPIO_PIN_12) == 0 && (btn_last_state & GPIO_PIN_12) != 0) {
+            uint16_t min_v = 4095, max_v = 0;
+            for (int i = 0; i < CHUNK_SIZE/2; i++) {
+                uint16_t v = (uint16_t)(adc_buffer[i] & 0xFFF);
+                if (v < min_v) min_v = v;
+                if (v > max_v) max_v = v;
+            }
+            trigger_level = (min_v + max_v) / 2;
+            
+            // Avisar a la PC el nuevo nivel (L<valor>\n)
+            if (is_usb_ready()) {
+                char msg[16];
+                int len = sprintf(msg, "L%d\n", trigger_level);
+                CDC_Transmit_FS((uint8_t*)msg, len);
+            }
+        }
+
         if ((state & GPIO_PIN_14) == 0 && (btn_last_state & GPIO_PIN_14) != 0) is_paused = !is_paused;
-        // PB15: Single Shot (Aplica solo si está en pausa)
         if ((state & GPIO_PIN_15) == 0 && (btn_last_state & GPIO_PIN_15) != 0) {
              if (is_paused) { single_shot_req = true; is_paused = false; }
         }
-        
         btn_last_state = state;
         last_btn_time = current_time;
     }
     
-    // Si la pantalla debe congelarse (Hold mode y no es Single Shot)
     if (is_paused && !single_shot_req) {
         HAL_Delay(10);
         continue;
     }
-    
-    // Timebase fijo: 100 µs/muestra (PSC=71, ARR=99). El potenciómetro fue retirado.
-    // El zoom se maneja desde el Software en la PC (PillScope Viewer).
 
-    // Calcular posición actual del puntero DMA de escritura
     uint32_t current_idx = ADC_BUF_SIZE - __HAL_DMA_GET_COUNTER(&hdma_adc1);
-    
     int triggered = 0;
     uint32_t trigger_idx = 0;
-    
-    // Buscar el cruce lógico (Trigger) con Schmitt-Trigger (Histéresis anti-ruido)
     int hysteresis = 150;
+
+    // Buscar el cruce lógico (Trigger)
     while (last_idx != current_idx && !triggered) {
-        uint16_t val = adc_buffer[last_idx];
+        uint32_t dual_val = adc_buffer[last_idx];
+        uint16_t val = (uint16_t)(dual_val & 0xFFF); // Muestra del ADC1
         
         if (!trigger_falling) {
-            // Rising Edge (Subida) con Histéresis
-            if (val < (TRIGGER_LEVEL - hysteresis)) trigger_armed = true; // Cayó debajo del ruido
-            if (trigger_armed && val >= (TRIGGER_LEVEL + hysteresis)) { // Rompió el techo
+            if (val < (trigger_level - hysteresis)) trigger_armed = true;
+            if (trigger_armed && val >= (trigger_level + hysteresis)) {
                 triggered = 1;
                 trigger_idx = last_idx;
                 trigger_armed = false;
             }
         } else {
-            // Falling Edge (Bajada) con Histéresis
-            if (val > (TRIGGER_LEVEL + hysteresis)) trigger_armed = true; // Subió sobre el ruido
-            if (trigger_armed && val <= (TRIGGER_LEVEL - hysteresis)) { // Rompió el piso
+            if (val > (trigger_level + hysteresis)) trigger_armed = true;
+            if (trigger_armed && val <= (trigger_level - hysteresis)) {
                 triggered = 1;
                 trigger_idx = last_idx;
                 trigger_armed = false;
@@ -220,119 +238,77 @@ int main(void)
         last_idx = (last_idx + 1) % ADC_BUF_SIZE;
     }
     
-    // MODO AUTO-TRIGGER Y NORMAL MODE OVERRIDE
     static uint32_t last_trigger_time = 0;
-    // Si pasaron más de 50ms sin cruce y estamos en Modo Auto, forzamos dibujo crudo
     if (!triggered && !normal_mode && (HAL_GetTick() - last_trigger_time > 50)) {
         triggered = 1;
-        trigger_idx = current_idx; // Tomamos lo instantáneo
+        trigger_idx = current_idx;
     }
     
     if (triggered) {
-        last_trigger_time = HAL_GetTick(); // Reiniciar cronómetro
+        last_trigger_time = HAL_GetTick();
         
-
-        // Bloquear hasta que el DMA avance CHUNK_SIZE veces usando su contador circular
+        // Esperar a que el buffer se llene (necesitamos CHUNK_SIZE muestras totales)
+        // Como cada entrada de 32 bits tiene 2 muestras, necesitamos CHUNK_SIZE/2 entradas de buffer
+        uint32_t required_buffer_samples = CHUNK_SIZE / 2;
         while (1) {
             uint32_t wait_idx = ADC_BUF_SIZE - __HAL_DMA_GET_COUNTER(&hdma_adc1);
             int distance = (wait_idx >= trigger_idx) ? (wait_idx - trigger_idx) : (ADC_BUF_SIZE - trigger_idx + wait_idx);
-            if (distance >= CHUNK_SIZE) break;
+            if (distance >= required_buffer_samples) break;
         }
         
-        // Verificar INTERRUPTOR PB13 (MODO AC TRUE SOFTWARE)
         int ac_mode = (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_13) == GPIO_PIN_RESET);
-        
-        int32_t chunk_voltages[CHUNK_SIZE];
-        
-        // Fase 1 y 2: Leer el ADC, decodificar el atenuador físico y aplicar ecuación AC/DC Absoluta
         uint32_t tmp_ptr = trigger_idx;
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            uint32_t adc_val = adc_buffer[tmp_ptr];
-            int32_t pin_mv = (adc_val * 3300) / 4095;
+        int bin_idx = 0;
+
+        // Encabezado
+        tx_buffer[bin_idx++] = 0xAA;
+        tx_buffer[bin_idx++] = 0xBB;
+        tx_buffer[bin_idx++] = 0xCC;
+        tx_buffer[bin_idx++] = 0xDD;
+
+        for (int i = 0; i < required_buffer_samples; i++) {
+            uint32_t dual_val = adc_buffer[tmp_ptr];
             
-            int32_t real_millivolts;
-            if (ac_mode) {
-                // Modo AC: El hardware capacitivo aisló el componente DC.
-                // El pin solo recibe el balanceo alterno montado en 1.65V. 
-                // Formula: Forzar el 1.65V a ser tu 0V absoluto en PC, y multiplicar la atenuación x2.
-                real_millivolts = (pin_mv - 1650) * 2;
-            } else {
-                // Modo DC: Señal cruda física.
-                // Formula: Restaurar absoluta GNDA. 
-                // x2 por el divisor de voltaje frontal, y luego se quitan los 1.65V inyectados por el opamp.
-                real_millivolts = (pin_mv * 2) - 1650;
+            // Extraer las dos muestras (ADC1 y ADC2)
+            uint16_t samples[2];
+            samples[0] = (uint16_t)(dual_val & 0xFFF);
+            samples[1] = (uint16_t)((dual_val >> 16) & 0xFFF);
+
+            for (int s = 0; s < 2; s++) {
+                int32_t adc_val = samples[s];
+                int32_t pin_mv = (adc_val * 3300) / 4095;
+                int16_t real_mv;
+                
+                // Reconstrucción Analógica AFE (Divisor x2 e inyección de offset 1.65V)
+                if (ac_mode) {
+                    real_mv = (int16_t)((pin_mv - 1650) * 2);
+                } else {
+                    real_mv = (int16_t)((pin_mv * 2) - 1650);
+                }
+                
+                if (probe_x10_mode) real_mv *= 10;
+
+                tx_buffer[bin_idx++] = (uint8_t)(real_mv & 0xFF);
+                tx_buffer[bin_idx++] = (uint8_t)((real_mv >> 8) & 0xFF);
             }
             
-            // Compensación de Sonda Profesional (x10)
-            if (probe_x10_mode) {
-                 real_millivolts *= 10;
-            }
-            
-            chunk_voltages[i] = real_millivolts;
             tmp_ptr = (tmp_ptr + 1) % ADC_BUF_SIZE;
         }
         
-        // Fase 3: Formatear a texto y empacar la información cruda con "Data Chunking"
-        int chunk_len = 0;
-        char temp[16];
-        // Encabezado de Trama para la Python App. Usamos memcpy puro en lugar de sprintf para evitar bugs de Newlib.
-        memcpy(tx_buffer, "FRAME_START\n", 12);
-        chunk_len = 12;
-        
-        // Filtro Anti-Ruido (Moving Average Window 4x)
-        int32_t filtered_voltages[CHUNK_SIZE];
-        if (filter_averaging) {
-            for (int i = 0; i < CHUNK_SIZE; i++) {
-                int32_t sm = chunk_voltages[i];  int count = 1;
-                if (i > 0) { sm += chunk_voltages[i-1]; count++; }
-                if (i > 1) { sm += chunk_voltages[i-2]; count++; }
-                if (i > 2) { sm += chunk_voltages[i-3]; count++; }
-                filtered_voltages[i] = sm / count;
-            }
+        if (is_usb_ready()) {
+            CDC_Transmit_FS((uint8_t*)tx_buffer, bin_idx);
         }
         
-        for (int i = 0; i < CHUNK_SIZE; i++) {
-            int32_t final_mv;
-            if (filter_averaging) {
-                 final_mv = filtered_voltages[i];
-            } else {
-                 final_mv = chunk_voltages[i];
-            }
-            
-            int len = 0;
-            if (final_mv < 0) {
-                uint32_t abs_mv = -final_mv;
-                uint32_t v_int = abs_mv / 1000;
-                uint32_t v_frac = abs_mv % 1000;
-                len = sprintf(temp, "-%lu.%03lu\n", v_int, v_frac); 
-            } else {
-                uint32_t v_int = final_mv / 1000;
-                uint32_t v_frac = final_mv % 1000;
-                len = sprintf(temp, "%lu.%03lu\n", v_int, v_frac); 
-            }
-            
-            memcpy(&tx_buffer[chunk_len], temp, len);
-            chunk_len += len;
-        }
-        tx_buffer[chunk_len] = '\0';
-        
-        CDC_Transmit_FS((uint8_t*)tx_buffer, chunk_len);
-        
-        // Comportamiento Single Shot (Se congela solo después de enviar el frame entero)
         if (single_shot_req) {
             single_shot_req = false;
             is_paused = true;
         }
         
-        // Re-establecemos los indices para la nueva búsqueda.
-        // HOLDOFF REAL: Sincronizamos al puntero ACTUAL del DMA (no al end_idx viejo)
-        // para descartar todos los datos que el DMA escribió mientras la CPU estaba
-        // ocupada transmitiendo por USB. Esto elimina el doble pulso por colisión.
-        HAL_Delay(5); // Pequeño descanso para que el bus USB digiera el paquete
+        HAL_Delay(1); 
         last_idx = (ADC_BUF_SIZE - __HAL_DMA_GET_COUNTER(&hdma_adc1)) % ADC_BUF_SIZE;
-        last_val = adc_buffer[(last_idx - 1 + ADC_BUF_SIZE) % ADC_BUF_SIZE];
     }
     /* USER CODE END WHILE */
+
 
     /* USER CODE BEGIN 3 */
   }
@@ -398,6 +374,7 @@ static void MX_ADC1_Init(void)
 
   /* USER CODE END ADC1_Init 0 */
 
+  ADC_MultiModeTypeDef multimode = {0};
   ADC_ChannelConfTypeDef sConfig = {0};
 
   /* USER CODE BEGIN ADC1_Init 1 */
@@ -414,6 +391,14 @@ static void MX_ADC1_Init(void)
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the ADC multi-mode
+  */
+  multimode.Mode = ADC_DUALMODE_INTERLFAST;
+  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
   {
     Error_Handler();
   }
@@ -467,7 +452,7 @@ static void MX_ADC2_Init(void)
 
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
   if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
@@ -501,7 +486,7 @@ static void MX_TIM3_Init(void)
   htim3.Instance = TIM3;
   htim3.Init.Prescaler = 0;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
+  htim3.Init.Period = 83;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
@@ -631,7 +616,46 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void Update_Trigger_Level(uint16_t level) {
+    if (level > 4095) level = 4095;
+    trigger_level = level;
+}
 
+/**
+  * @brief Cambia la velocidad de muestreo del hardware dinámicamente.
+  * @param speed_idx: 0=Turbo(1.7MSPS), 1=Fast(171kSPS), 2=Mid(17kSPS), 3=Slow(1.7kSPS)
+  */
+void Update_Sampling_Rate(uint8_t speed_idx) {
+    // Detener timer para evitar glitches
+    HAL_TIM_Base_Stop(&htim3);
+    
+    switch(speed_idx) {
+        case 0: // 1.714 MSPS (Uniforme)
+            TIM3->PSC = 0;
+            TIM3->ARR = 83;
+            break;
+        case 1: // 171.4 kSPS
+            TIM3->PSC = 0;
+            TIM3->ARR = 839;
+            break;
+        case 2: // 17.14 kSPS
+            TIM3->PSC = 49;
+            TIM3->ARR = 83;
+            break;
+        case 3: // 1.714 kSPS
+            TIM3->PSC = 499;
+            TIM3->ARR = 83;
+            break;
+        default:
+            TIM3->PSC = 0;
+            TIM3->ARR = 83;
+            break;
+    }
+    
+    // Resetear contador y arrancar
+    TIM3->CNT = 0;
+    HAL_TIM_Base_Start(&htim3);
+}
 /* USER CODE END 4 */
 
 /**
