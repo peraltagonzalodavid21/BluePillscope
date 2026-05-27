@@ -49,7 +49,6 @@ El BluePillScope permite una interacción híbrida única entre controles físic
 ## Estructura del Repositorio
 - `/Core`: Firmware desarrollado en C (STM32CubeIDE + HAL) [16].
 - `/App Python`: Aplicación Host (Python 3.x, PyQt5, PyQtGraph, NumPy) [16].
-- `/Docs`: Reportes técnicos detallados y bitácoras de investigación [17].
 
 ---
 
