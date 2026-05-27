@@ -127,6 +127,7 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
         self.use_filter = False
         self.stitch_count = 1 # Por defecto 1x (sin costuras)
         self.fixed_sample_us = 0.5833 # Valor inicial (Turbo)
+        self.trig_level = 1.65
         
         self._init_ui()
         self._apply_theme("Hantek Dark")
@@ -226,8 +227,10 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
         self.control_panel = QtWidgets.QScrollArea()
         self.control_panel.setWidgetResizable(True)
         self.control_panel.setFixedWidth(240)
+        self.control_panel.setObjectName("controlPanel")
         
         control_widget = QtWidgets.QWidget()
+        control_widget.setObjectName("controlWidget")
         control_v_layout = QtWidgets.QVBoxLayout(control_widget)
         control_v_layout.setContentsMargins(5, 5, 5, 5)
         
@@ -295,20 +298,20 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
         metrics_bar = QtWidgets.QHBoxLayout()
         metrics_bar.setSpacing(10)
         
+        self.metric_cards = []
         def create_metric_card(title, value_init):
             card = QtWidgets.QFrame()
-            card.setStyleSheet("background: rgba(0,0,0,0.15); border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);")
+            card.setObjectName("metricCard")
             card_layout = QtWidgets.QVBoxLayout(card)
             card_layout.setContentsMargins(6, 4, 6, 4)
             card_layout.setSpacing(2)
             
             lbl_title = QtWidgets.QLabel(title)
-            lbl_title.setStyleSheet("font-size: 9px; text-transform: uppercase; color: #8888AA; font-weight: bold;")
             lbl_val = QtWidgets.QLabel(value_init)
-            lbl_val.setStyleSheet("font-size: 15px; font-weight: bold; color: #4ecca3;")
             
             card_layout.addWidget(lbl_title)
             card_layout.addWidget(lbl_val)
+            self.metric_cards.append((card, lbl_title, lbl_val))
             return card, lbl_val
             
         self.card_vmax, self.lbl_vmax = create_metric_card("V-MAXIMA", "---")
@@ -336,6 +339,11 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
         self.statusBar().showMessage("Ready | 1.71 MSPS Uniform Mode Enabled")
         self.fft_window = None
 
+    def _update_metric_colors(self):
+        for card, lbl_title, lbl_val in self.metric_cards:
+            lbl_title.setStyleSheet(f"font-size: 9px; text-transform: uppercase; color: {self.current_theme['TEXT_DIM']}; font-weight: bold;")
+            lbl_val.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {self.current_theme['ACCENT']};")
+
     def _apply_theme(self, name):
         t = THEMES[name]
         self.current_theme = t
@@ -348,6 +356,8 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
                 border-bottom: 2px solid {t['GRID_COLOR']}; 
                 border-radius: 5px;
             }}
+            QScrollArea#controlPanel {{ background-color: {t['BG_PANEL']}; border: none; }}
+            QWidget#controlWidget {{ background-color: {t['BG_PANEL']}; }}
             QGroupBox {{
                 color: {t['ACCENT']};
                 font-weight: bold;
@@ -372,8 +382,10 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
             }}
             QLabel {{ color: {t['TEXT_LIGHT']}; font-size: 11px; }}
             QCheckBox {{ color: {t['TEXT_LIGHT']}; font-size: 11px; }}
+            QWidget#metricCard {{ background: rgba(0,0,0,0.15); border-radius: 4px; border: 1px solid {t['GRID_COLOR']}; }}
         """
         self.setStyleSheet(qss)
+        self._update_metric_colors()
         
         # Plot styling
         self.plot.setBackground(t['BG_SCREEN'])
@@ -575,6 +587,6 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
 if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
-    ex = PillScopeViewer()
+    ex = BluePillScopeViewer()
     ex.show()
     sys.exit(app.exec_())
