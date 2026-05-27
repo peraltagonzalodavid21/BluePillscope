@@ -1,5 +1,5 @@
 """
-PillScope Pro Viewer v4.0 - Professional Interface
+BluePillScope Pro Viewer v4.0 - Professional Interface
 Diseñado para el firmware STM32F103 Blue Pill en Modo ADC Dual Intercalado Uniforme.
 Protocolo: 0xAA 0xBB 0xCC 0xDD + 1024 muestras int16_t (Little Endian) en milivoltios.
 """
@@ -108,11 +108,11 @@ class FFTWindow(QtWidgets.QWidget):
             
         self.curve.setData(freq, fft_vals)
 
-class PillScopeViewer(QtWidgets.QMainWindow):
+class BluePillScopeViewer(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_theme = THEMES["Hantek Dark"]
-        self.setWindowTitle("PillScope Pro v4.0 | 1.71 MSPS Engineering Edition")
+        self.setWindowTitle("BluePillScope Pro v4.0 | 1.71 MSPS Engineering Edition")
         self.resize(1300, 850)
         
         # Estado
@@ -178,7 +178,7 @@ class PillScopeViewer(QtWidgets.QMainWindow):
         top_layout.addStretch()
         
         # Título / Logo Central
-        title = QtWidgets.QLabel("PILLSCOPE PRO v4.0")
+        title = QtWidgets.QLabel("BLUEPILLSCOPE PRO v4.0")
         title.setStyleSheet("font-weight: bold; font-size: 16px; color: #4ecca3;")
         top_layout.addWidget(title)
         

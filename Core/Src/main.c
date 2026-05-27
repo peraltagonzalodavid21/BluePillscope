@@ -141,7 +141,6 @@ int main(void)
   // Botones de Comando Profesionales
   bool trigger_falling = false;
   bool normal_mode     = false;
-  bool filter_averaging= false;
   bool is_paused       = false;
   bool single_shot_req = false;
   bool probe_x10_mode  = false;
