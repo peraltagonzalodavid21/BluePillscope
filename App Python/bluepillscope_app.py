@@ -128,6 +128,7 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
         self.stitch_count = 1 # Por defecto 1x (sin costuras)
         self.fixed_sample_us = 0.5833 # Valor inicial (Turbo)
         self.trig_level = 1.65
+        self.vertical_offset = 0.0
         
         self._init_ui()
         self._apply_theme("Hantek Dark")
@@ -206,6 +207,7 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
         # Línea de Trigger (Visual + Hardware)
         self.trig_line = pg.InfiniteLine(pos=1.65, angle=0, movable=True, 
                                         pen=pg.mkPen("#ff6b6b", width=1, style=QtCore.Qt.DashLine))
+        self.trig_line.sigPositionChanged.connect(self._on_trig_line_dragging)
         self.trig_line.sigPositionChangeFinished.connect(self._on_trig_line_moved)
         self.plot.addItem(self.trig_line)
         
@@ -247,12 +249,38 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
         # Grupo: Escala Vertical
         group_vert = QtWidgets.QGroupBox("📶 VERTICAL")
         gv_layout = QtWidgets.QVBoxLayout(group_vert)
+        
+        gv_layout.addWidget(QtWidgets.QLabel("Volts/Div:"))
         self.combo_vdiv = QtWidgets.QComboBox()
         self.combo_vdiv.addItems(list(V_DIV_MAP.keys()))
         self.combo_vdiv.setCurrentText("1 V/div")
         self.combo_vdiv.currentTextChanged.connect(self._on_vdiv_changed)
         gv_layout.addWidget(self.combo_vdiv)
+        
+        gv_layout.addWidget(QtWidgets.QLabel("Offset (V):"))
+        self.spin_offset = QtWidgets.QDoubleSpinBox()
+        self.spin_offset.setRange(-5.0, 5.0)
+        self.spin_offset.setSingleStep(0.1)
+        self.spin_offset.setValue(0.0)
+        self.spin_offset.setDecimals(2)
+        self.spin_offset.valueChanged.connect(self._on_offset_changed)
+        gv_layout.addWidget(self.spin_offset)
+        
         control_v_layout.addWidget(group_vert)
+
+        # Grupo: Trigger
+        group_trig = QtWidgets.QGroupBox("🎯 TRIGGER")
+        gt_layout = QtWidgets.QVBoxLayout(group_trig)
+        
+        trig_row = QtWidgets.QHBoxLayout()
+        trig_row.addWidget(QtWidgets.QLabel("Nivel:"))
+        self.lbl_trig_val = QtWidgets.QLabel(f"{self.trig_level:.2f} V")
+        self.lbl_trig_val.setStyleSheet(f"font-weight: bold; color: {self.current_theme['TRIG_COLOR']};")
+        trig_row.addWidget(self.lbl_trig_val)
+        gt_layout.addLayout(trig_row)
+        
+        gt_layout.addWidget(QtWidgets.QLabel("(Arrastre la línea roja)"))
+        control_v_layout.addWidget(group_trig)
         
         # Grupo: DSP & Memoria
         group_dsp = QtWidgets.QGroupBox("🧪 DSP / MEMORY")
@@ -366,7 +394,7 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
                 padding-top: 10px;
                 border-radius: 5px;
             }}
-            QComboBox, QPushButton {{
+            QComboBox, QPushButton, QDoubleSpinBox {{
                 background-color: {t['BG_PANEL']};
                 color: {t['TEXT_LIGHT']};
                 border: 1px solid {t['GRID_COLOR']};
@@ -385,6 +413,8 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
             QWidget#metricCard {{ background: rgba(0,0,0,0.15); border-radius: 4px; border: 1px solid {t['GRID_COLOR']}; }}
         """
         self.setStyleSheet(qss)
+        if hasattr(self, 'lbl_trig_val'):
+            self.lbl_trig_val.setStyleSheet(f"font-weight: bold; color: {t['TRIG_COLOR']};")
         self._update_metric_colors()
         
         # Plot styling
@@ -467,11 +497,24 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
         _, ymin, ymax = V_DIV_MAP[text]
         self.plot.setYRange(ymin, ymax, padding=0)
 
+    def _on_offset_changed(self, val):
+        self.vertical_offset = val
+        self._on_trig_line_moved()
+
+    def _on_trig_line_dragging(self):
+        val_v = self.trig_line.value()
+        self.lbl_trig_val.setText(f"{val_v:.2f} V")
+
     def _on_trig_line_moved(self):
         val_v = self.trig_line.value()
-        # Convertir Voltaje a valor de ADC (0V=0, 1.65V=2048, 3.3V=4095)
-        # Asumiendo modo DC: Vpin = (Vreal + 1.65) / 2
-        pin_v = (val_v + 1.65) / 2.0
+        self.lbl_trig_val.setText(f"{val_v:.2f} V")
+        
+        # Compensar offset para calcular el voltaje real de entrada
+        real_v = val_v - self.vertical_offset
+            
+        # Convertir a voltaje de pin y luego a valor digital de ADC (12 bits: 0 a 4095)
+        # Ecuación del AFE: Vpin = (Vreal + 1.60) / 2
+        pin_v = (real_v + 1.60) / 2.0
         adc_val = int((pin_v / 3.3) * 4095)
         
         if adc_val < 0: adc_val = 0
@@ -481,7 +524,7 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
             try:
                 cmd = f"L{adc_val}\n".encode()
                 self.ser.write(cmd)
-                print(f"Sent Trigger Level: {cmd}")
+                print(f"Sent Trigger Level: {cmd} (adc_val={adc_val}, real_v={real_v:.3f}V)")
             except Exception as e:
                 print(f"Error sending trigger: {e}")
 
@@ -509,10 +552,14 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
                     if len(parts) > 1:
                         val_str = parts[1].split(b'\n')[0]
                         adc_val = int(val_str)
-                        # Revertir matemática: Vreal = (Vpin * 2) - 1.65
                         pin_v = (adc_val / 4095.0) * 3.3
-                        real_v = (pin_v * 2.0) - 1.65
-                        self.trig_line.setValue(real_v)
+                        real_v = (pin_v * 2.0) - 1.60
+                        
+                        # Convertir a coordenadas de pantalla (con offset)
+                        screen_v = real_v + self.vertical_offset
+                        
+                        self.trig_line.setValue(screen_v)
+                        self.lbl_trig_val.setText(f"{screen_v:.2f} V")
                 except: pass
 
             self.binary_buffer.extend(chunk)
@@ -537,7 +584,11 @@ class BluePillScopeViewer(QtWidgets.QMainWindow):
                 
                 flat = []
                 for f in self.history_frames: flat.extend(f)
-                self.display_data = np.array(flat)
+                raw_display = np.array(flat)
+                
+                # Aplicar offset de software
+                processed_data = raw_display + self.vertical_offset
+                self.display_data = processed_data
                 
                 # DSP
                 plot_data = self.display_data

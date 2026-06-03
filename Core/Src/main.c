@@ -278,11 +278,11 @@ int main(void)
                 int32_t pin_mv = (adc_val * 3300) / 4095;
                 int16_t real_mv;
                 
-                // Reconstrucción Analógica AFE (Divisor x2 e inyección de offset 1.65V)
+                // Reconstrucción Analógica AFE (Divisor x2 e inyección de offset 1.6V)
                 if (ac_mode) {
-                    real_mv = (int16_t)((pin_mv - 1650) * 2);
+                    real_mv = (int16_t)((pin_mv - 1600) * 2);
                 } else {
-                    real_mv = (int16_t)((pin_mv * 2) - 1650);
+                    real_mv = (int16_t)((pin_mv * 2) - 1600);
                 }
                 
                 if (probe_x10_mode) real_mv *= 10;
